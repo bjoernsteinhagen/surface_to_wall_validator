@@ -23,9 +23,9 @@ def test_function_run(test_automation_run_data: AutomationRunData, test_automati
         automation_context,
         automate_function,
         FunctionInputs(
-            forbidden_speckle_type="None",
+            forbidden_speckle_type="Objects.Structural.Geometry.Element2D",
             whisper_message=SecretStr("testing automatically"),
         ),
     )
 
-    assert automate_sdk.run_status == AutomationStatus.SUCCEEDED
+    assert automate_sdk.run_status == AutomationStatus.FAILED

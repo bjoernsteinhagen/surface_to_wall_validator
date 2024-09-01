@@ -3,15 +3,19 @@
 Use the automation_context module to wrap your function in an Automate context helper.
 """
 
+from collections import defaultdict
+from typing import Optional
 from pydantic import Field, SecretStr
 from speckle_automate import (
     AutomateBase,
     AutomationContext,
     execute_automate_function,
 )
-
+from specklepy.objects.units import Units
 from flatten import flatten_base
 
+from models.etabs import validate_etabs_source, extract_analytical_surfaces
+from models.revit import get_revit_model
 
 class FunctionInputs(AutomateBase):
     """These are function author-defined values.
@@ -21,14 +25,28 @@ class FunctionInputs(AutomateBase):
     https://docs.pydantic.dev/latest/usage/models/
     """
 
-    # An example of how to use secret values.
-    whisper_message: SecretStr = Field(title="This is a secret message")
-    forbidden_speckle_type: str = Field(
-        title="Forbidden speckle type",
-        description=(
-            "If a object has the following speckle_type,"
-            " it will be marked with an error."
-        ),
+    revit_model_name: str = Field(
+        ...,
+        title="Branch name of the Revit model to check the structural model against.",
+        )
+    
+    buffer_size: float = Field(
+        default=0.01,
+        title="Buffer size for the Revit walls (tolerance)",
+        description="Specify the size of the buffered mesh. \
+            The vertices of the 3D mesh of the wall(s) are translated along the normals of each face with this value.",
+            json_schema_extra={"readOnly" : True,
+                               },
+    )
+
+    buffer_unit: str = Field(
+        default=Units.m,
+        title="Buffer Unit",
+        description="Unit of the buffer size value.",
+        json_schema_extra={
+            "examples": ["mm", "cm", "m"],
+            "readOnly" : True
+        },
     )
 
 
@@ -46,11 +64,16 @@ def automate_function(
         function_inputs: An instance object matching the defined schema.
     """
     # The context provides a convenient way to receive the triggering version.
-    version_root_object = automate_context.receive_version()
+    etabs_commit = automate_context.receive_version()
+    revit_commit = get_revit_model(automate_context, function_inputs.revit_model_name)
+
+    if validate_etabs_source(etabs_commit):
+        analytical_surfaces = extract_analytical_surfaces(etabs_model=getattr(etabs_commit, "@Model"))
+        print(analytical_surfaces)
 
     objects_with_forbidden_speckle_type = [
         b
-        for b in flatten_base(version_root_object)
+        for b in flatten_base(etabs_commit["@Model"])
         if b.speckle_type == function_inputs.forbidden_speckle_type
     ]
     count = len(objects_with_forbidden_speckle_type)
@@ -91,7 +114,6 @@ def automate_function_without_inputs(automate_context: AutomationContext) -> Non
     """
     pass
 
-
 # make sure to call the function with the executor
 if __name__ == "__main__":
     # NOTE: always pass in the automate function by its reference; do not invoke it!
@@ -100,4 +122,4 @@ if __name__ == "__main__":
     execute_automate_function(automate_function, FunctionInputs)
 
     # If the function has no arguments, the executor can handle it like so
-    # execute_automate_function(automate_function_without_inputs)
+    #execute_automate_function(automate_function_without_inputs)
