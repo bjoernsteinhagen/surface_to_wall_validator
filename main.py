@@ -2,34 +2,27 @@
 
 Use the automation_context module to wrap your function in an Automate context helper.
 """
-
-from collections import defaultdict
-from typing import Optional
-from pydantic import Field, SecretStr
+from pydantic import Field
 from speckle_automate import (
     AutomateBase,
     AutomationContext,
     execute_automate_function,
 )
 from specklepy.objects.units import Units
-from flatten import flatten_base
+from models.etabs_model import EtabsModelProcessor
+from models.revit_model import RevitModelProcessor
+from computations.surface_wall_matcher import SurfaceWallMatcher
 
-from models.etabs import validate_etabs_source, extract_analytical_surfaces
-from models.revit import get_revit_model
 
 class FunctionInputs(AutomateBase):
-    """These are function author-defined values.
-
-    Automate will make sure to supply them matching the types specified here.
-    Please use the pydantic model schema to define your inputs:
-    https://docs.pydantic.dev/latest/usage/models/
+    """Author-defined function values.
     """
 
     revit_model_name: str = Field(
         ...,
         title="Branch name of the Revit model to check the structural model against.",
         )
-    
+
     buffer_size: float = Field(
         default=0.01,
         title="Buffer size for the Revit walls (tolerance)",
@@ -54,7 +47,7 @@ def automate_function(
     automate_context: AutomationContext,
     function_inputs: FunctionInputs,
 ) -> None:
-    """This is an example Speckle Automate function.
+    """This is the Speckle Automate function.
 
     Args:
         automate_context: A context-helper object that carries relevant information
@@ -63,56 +56,22 @@ def automate_function(
             It also has convenient methods for attaching result data to the Speckle model.
         function_inputs: An instance object matching the defined schema.
     """
-    # The context provides a convenient way to receive the triggering version.
-    etabs_commit = automate_context.receive_version()
-    revit_commit = get_revit_model(automate_context, function_inputs.revit_model_name)
+    # Process ETABS model
+    etabs_processor = EtabsModelProcessor(automate_context)
+    analytical_surfaces = etabs_processor.process()
 
-    if validate_etabs_source(etabs_commit):
-        analytical_surfaces = extract_analytical_surfaces(etabs_model=getattr(etabs_commit, "@Model"))
-        print(analytical_surfaces)
+    # Process Revit model
+    revit_model = RevitModelProcessor.get_model(
+        automate_context.speckle_client,
+        automate_context.automation_run_data.project_id,
+        function_inputs.revit_model_name
+    )
+    revit_processor = RevitModelProcessor(revit_model)
+    architectural_walls = revit_processor.get_architectural_walls()
 
-    objects_with_forbidden_speckle_type = [
-        b
-        for b in flatten_base(etabs_commit["@Model"])
-        if b.speckle_type == function_inputs.forbidden_speckle_type
-    ]
-    count = len(objects_with_forbidden_speckle_type)
-
-    if count > 0:
-        # This is how a run is marked with a failure cause.
-        automate_context.attach_error_to_objects(
-            category="Forbidden speckle_type"
-            f" ({function_inputs.forbidden_speckle_type})",
-            object_ids=[o.id for o in objects_with_forbidden_speckle_type if o.id],
-            message="This project should not contain the type: "
-            f"{function_inputs.forbidden_speckle_type}",
-        )
-        automate_context.mark_run_failed(
-            "Automation failed: "
-            f"Found {count} object that have one of the forbidden speckle types: "
-            f"{function_inputs.forbidden_speckle_type}"
-        )
-
-        # Set the automation context view to the original model/version view
-        # to show the offending objects.
-        automate_context.set_context_view()
-
-    else:
-        automate_context.mark_run_success("No forbidden types found.")
-
-    # If the function generates file results, this is how it can be
-    # attached to the Speckle project/model
-    # automate_context.store_file_result("./report.pdf")
-
-
-def automate_function_without_inputs(automate_context: AutomationContext) -> None:
-    """A function example without inputs.
-
-    If your function does not need any input variables,
-     besides what the automation context provides,
-     the inputs argument can be omitted.
-    """
-    pass
+    # Find matching partners
+    matcher = SurfaceWallMatcher(buffer_distance=function_inputs.buffer_size)
+    matches = matcher.find_matching_partners(analytical_surfaces, architectural_walls)
 
 # make sure to call the function with the executor
 if __name__ == "__main__":
@@ -120,6 +79,3 @@ if __name__ == "__main__":
 
     # Pass in the function reference with the inputs schema to the executor.
     execute_automate_function(automate_function, FunctionInputs)
-
-    # If the function has no arguments, the executor can handle it like so
-    #execute_automate_function(automate_function_without_inputs)
